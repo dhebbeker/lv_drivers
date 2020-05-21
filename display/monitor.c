@@ -38,16 +38,6 @@
 #define MONITOR_VER_RES        LV_VER_RES
 #endif
 
-#if defined(__APPLE__) && defined(TARGET_OS_MAC)
-#  if __APPLE__ && TARGET_OS_MAC
-#define MONITOR_APPLE
-#  endif
-#endif
-
-#if defined(__EMSCRIPTEN__)
-#  define MONITOR_EMSCRIPTEN
-#endif
-
 /**********************
  *      TYPEDEFS
  **********************/
@@ -66,9 +56,13 @@ typedef struct {
 /**********************
  *  STATIC PROTOTYPES
  **********************/
-static int monitor_sdl_refr_thread(void * param);
 static void window_create(monitor_t * m);
 static void window_update(monitor_t * m);
+int quit_filter(void * userdata, SDL_Event * event);
+static void monitor_sdl_clean_up(void);
+static void monitor_sdl_init(void);
+static void monitor_sdl_refr_core(void);
+static void monitor_sdl_refr_thread(lv_task_t * t);
 
 /***********************
  *   GLOBAL PROTOTYPES
@@ -86,14 +80,6 @@ monitor_t monitor2;
 static volatile bool sdl_inited = false;
 static volatile bool sdl_quit_qry = false;
 
-int quit_filter(void * userdata, SDL_Event * event);
-static void monitor_sdl_clean_up(void);
-static void monitor_sdl_init(void);
-#ifdef MONITOR_EMSCRIPTEN
-void monitor_sdl_refr_core(void); /* called from Emscripten loop */
-#else
-static void monitor_sdl_refr_core(void);
-#endif
 
 /**********************
  *      MACROS
@@ -108,15 +94,8 @@ static void monitor_sdl_refr_core(void);
  */
 void monitor_init(void)
 {
-    /*OSX needs to initialize SDL here*/
-#if defined(MONITOR_APPLE) || defined(MONITOR_EMSCRIPTEN)
     monitor_sdl_init();
-#endif
-
-#ifndef MONITOR_EMSCRIPTEN
-    SDL_CreateThread(monitor_sdl_refr_thread, "sdl_refr", NULL);
-    while(sdl_inited == false); /*Wait until 'sdl_refr' initializes the SDL*/
-#endif
+    lv_task_create(monitor_sdl_refr_thread, 10, LV_TASK_PRIO_HIGH, NULL);
 }
 
 /**
@@ -237,24 +216,18 @@ void monitor_flush2(lv_disp_drv_t * disp_drv, const lv_area_t * area, lv_color_t
  * It initializes SDL, handles drawing and the mouse.
  */
 
-static int monitor_sdl_refr_thread(void * param)
+static void monitor_sdl_refr_thread(lv_task_t * t)
 {
-    (void)param;
+    (void)t;
 
-    /*If not OSX initialize SDL in the Thread*/
-#ifndef MONITOR_APPLE
-    monitor_sdl_init();
-#endif
+    /*Refresh handling*/
+    monitor_sdl_refr_core();
+
     /*Run until quit event not arrives*/
-    while(sdl_quit_qry == false) {
-        /*Refresh handling*/
-        monitor_sdl_refr_core();
+    if(sdl_quit_qry) {
+        monitor_sdl_clean_up();
+        exit(0);
     }
-
-    monitor_sdl_clean_up();
-    exit(0);
-
-    return 0;
 }
 
 int quit_filter(void * userdata, SDL_Event * event)
@@ -269,8 +242,6 @@ int quit_filter(void * userdata, SDL_Event * event)
     else if(event->type == SDL_QUIT) {
         sdl_quit_qry = true;
     }
-
-
 
     return 1;
 }
@@ -310,13 +281,8 @@ static void monitor_sdl_init(void)
     sdl_inited = true;
 }
 
-#ifdef MONITOR_EMSCRIPTEN
-void monitor_sdl_refr_core(void)
-#else
 static void monitor_sdl_refr_core(void)
-#endif
 {
-
     if(monitor.sdl_refr_qry != false) {
         monitor.sdl_refr_qry = false;
         window_update(&monitor);
@@ -329,7 +295,6 @@ static void monitor_sdl_refr_core(void)
     }
 #endif
 
-#if !defined(MONITOR_APPLE) && !defined(MONITOR_EMSCRIPTEN)
     SDL_Event event;
     while(SDL_PollEvent(&event)) {
 #if USE_MOUSE != 0
@@ -359,10 +324,6 @@ static void monitor_sdl_refr_core(void)
             }
         }
     }
-#endif /*MONITOR_APPLE*/
-
-    /*Sleep some time*/
-    SDL_Delay(SDL_REFR_PERIOD);
 
 }
 
@@ -372,11 +333,7 @@ static void window_create(monitor_t * m)
                               SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
                               MONITOR_HOR_RES * MONITOR_ZOOM, MONITOR_VER_RES * MONITOR_ZOOM, 0);       /*last param. SDL_WINDOW_BORDERLESS to hide borders*/
 
-#if MONITOR_VIRTUAL_MACHINE || defined(MONITOR_EMSCRIPTEN)
     m->renderer = SDL_CreateRenderer(m->window, -1, SDL_RENDERER_SOFTWARE);
-#else
-    m->renderer = SDL_CreateRenderer(m->window, -1, 0);
-#endif
     m->texture = SDL_CreateTexture(m->renderer,
                                 SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, MONITOR_HOR_RES, MONITOR_VER_RES);
     SDL_SetTextureBlendMode(m->texture, SDL_BLENDMODE_BLEND);
